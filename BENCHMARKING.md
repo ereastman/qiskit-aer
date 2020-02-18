@@ -95,3 +95,21 @@ it's telling us that for our Quantum Volume circuit the time it took to complete
 - 2.19 seconds with Reset noise
 - 9.76 seconds with Kraus noise
 
+# Github Pages
+
+Given the proper setup, ASV is capable of outputting and publishing benchmark result visualizations which can viewed through github pages. This requires that the user has access to a qiskit-aer fork and write access to the `gh-pages` branch. For full instructions on how to setup a github pages landing page for your fork see [here](https://help.github.com/en/github/working-with-github-pages/creating-a-github-pages-site) and [here](). TL;DR:
+
+```
+ $ git clone git@github.com:UNAME/qiskit-aer.git && cd qiskit-aer && git checkout master
+ $ git checkout -b gh-pages
+ $ git push -u origin gh-pages
+ $ git checkout master
+```
+
+Your gh-pages page should be available at `https://UNAME.github.io/qiskit-aer/`
+
+From the `qiskit-aer/test` directory, run a (relatively) quick benchmark to get some results to see:
+
+```
+ (test) $ asv run --config asv.os.conf.json --bench simple_benchmarks
+```

@@ -27,7 +27,7 @@ contrib/standalone/version.hpp
 *.log
 *.env
 *.idea/
-test/.asv
+#test/.asv
 
 .tox/
 .stestr/
