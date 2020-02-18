@@ -106,10 +106,37 @@ Given the proper setup, ASV is capable of outputting and publishing benchmark re
  $ git checkout master
 ```
 
-Your gh-pages page should be available at `https://UNAME.github.io/qiskit-aer/`
+Your page should now be available at `https://UNAME.github.io/qiskit-aer/`.
+You will only see the README for qiskit-aer; in order to see benchmark results we must create them (`asv run`) and publish them (`asv gh-pages`).
 
-From the `qiskit-aer/test` directory, run a (relatively) quick benchmark to get some results to see:
+We will first generate results for the `master` branch.
+In the future, when you want to make a PR from a different branch, you can run the benchmark suite from that branch and compare against the results we generate here.
+Ensure you are on the master branch then, from the `qiskit-aer/test` directory, run a (relatively) quick benchmark to create some results:
 
 ```
- (test) $ asv run --config asv.os.conf.json --bench simple_benchmarks
+ test $ git checkout master
+ test $ asv run --config asv.macos.conf.json --bench simple_benchmarks
+· Creating environments....
+· Discovering benchmarks..
+·· Uninstalling from conda-py3.6...
+·· Building 248bc9e5 <gh-pages> for conda-py3.6....................................
+·· Installing 248bc9e5 <gh-pages> into conda-py3.6..
+· Running 2 total benchmarks (1 commits * 1 environments * 2 benchmarks)
+[  0.00%] · For qiskit-aer commit 248bc9e5 <gh-pages>:
+[  0.00%] ·· Benchmarking conda-py3.6
+[ 25.00%] ··· Running (simple_benchmarks.SimpleCxTimeSuite.time_simple_cx--)..
+...
 ```
+
+The `asv run` command will print results as it goes along and when it finishes you will have those raw results stored in `test/.asv/results/`.
+To view those results you *MUST* publish them using the `asv gh-pages` command:
+
+```
+ $ asv gh-pages --config asv.os.conf.json --rewrite
+```
+
+This will apply the changes made by the `asv run` command to the `test/.asv` subdirectory to the `gh-pages` branch of the current repo.
+It then commits and pushes these changes to `origin`.
+Specifics may vary depending on how you set up the github pages for your fork. 
+There are also probably some bugs in asv's building of environments and/or pushing to your repo. 
+This author has found luck in nuking the test/.asv/* subdirectories as needed (/if errors start popping up).
