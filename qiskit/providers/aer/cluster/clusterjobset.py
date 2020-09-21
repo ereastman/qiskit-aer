@@ -21,6 +21,7 @@ import time
 import logging
 import uuid
 import threading
+import functools
 
 from qiskit.circuit import QuantumCircuit
 from qiskit.pulse import Schedule
@@ -29,15 +30,12 @@ from qiskit.qobj import QasmQobj, PulseQobj
 from qiskit.providers import JobError
 from qiskit.providers.jobstatus import JobStatus
 
-from .clusterjob import ClusterJob
-from .clusterresults import ClusterResults
-from ..aerjob import requires_submit
-
+from .clusterjob import CJob
+from .clusterresults import CResults
 
 logger = logging.getLogger(__name__)
 
-
-class ClusterJobSet:
+class JobSet:
     """A set of cluster jobs.
 
     An instance of this class is returned when you submit experiments using
@@ -51,71 +49,70 @@ class ClusterJobSet:
     _id_prefix = "cluster_jobset_"
     _id_suffix = "_"
 
-    def __init__(
-            self,
-            name: Optional[str] = None,
-            short_id: Optional[str] = None
-    ) -> None:
-        """ClusterJobSet constructor.
+    def __init__(self, experiments, backend, backend_options=None, noise_model=None, validate=False,
+                 name=None, **assemble_config) -> None:
+        """JobSet constructor.
 
         Args:
             name: Name for this set of jobs. If not specified, the current
                 date and time is used.
             short_id: Short ID for this set of jobs.
         """
-        self._managed_jobs = []  # type: List[ManagedJob]
-        self._name = name or datetime.utcnow().isoformat()
-        self._backend = None  # type: Optional[IBMQBackend]
-        self._id = short_id or uuid.uuid4().hex + '-' + str(time.time()).replace('.', '')
-        self._id_long = self._id_prefix + self._id + self._id_suffix
-        self._job_submit_lock = threading.Lock()  # Used to synchronize job submit.
+        self._name = name or str(uuid.uuid4())
+        self._experiments = experiments
+        self._backend = backend  # type: Optional[IBMQBackend]
+        self._backend_options = backend_options
+        self._noise_model = noise_model
+        self._validate = validate
+        self._assemble_config = assemble_config
 
         # Used for caching
-        self._managed_results = None  # type: Optional[ManagedResults]
-        self._error_msg = None  # type: Optional[str]
+        self._futures = []
+        self._cluster_results = None
+        self._error_msg = None
 
-    def run(
-            self,
-            experiment_list: Union[List[List[QuantumCircuit]], List[List[Schedule]]],
-            backend: AerBackend,
-            executor: ThreadPoolExecutor,
-            **assemble_config: Any
-    ) -> None:
-        """Execute a list of circuits or pulse schedules on a backend.
+    def requires_submit(func):
+        """
+        Decorator to ensure that a submit has been performed before
+        calling the method.
+ 
+        Args:
+            func (callable): test function to be decorated.
+ 
+        Returns:
+            callable: the decorated function.
+        """
+        @functools.wraps(func)
+        def _wrapper(self, *args, **kwargs):
+            if not self._futures:
+                raise JobError("JobSet not submitted yet!. You have to .run() first!")
+            return func(self, *args, **kwargs)
+        return _wrapper
+
+    def run(self, executor) -> None:
+        """Execute this set of jobs on an executor.
 
         Args:
-            experiment_list : Circuit(s) or pulse schedule(s) to execute.
-            backend: Backend to execute the experiments on.
             executor: The thread pool used to submit jobs asynchronously.
-            job_share_level: Job share level.
-            job_tags: Tags to be assigned to the job.
-            assemble_config: Additional arguments used to configure the Qobj
-                assembly. Refer to the :func:`qiskit.compiler.assemble` documentation
-                for details on these arguments.
 
         Raises:
-            IBMQJobManagerInvalidStateError: If the jobs were already submitted.
+            RuntimeError: If the jobs were already submitted.
         """
-        if self._managed_jobs:
-            raise IBMQJobManagerInvalidStateError(
+        if self._futures:
+            raise RuntimeError(
                 'The jobs for this managed job set have already been submitted.')
 
-        self._backend = backend
-
-        exp_index = 0
-        total_jobs = len(experiment_list)
-        for i, experiments in enumerate(experiment_list):
-            qobj = assemble(experiments, backend=backend, **assemble_config)
-            job_name = JOB_SET_NAME_FORMATTER.format(self._name, i)
-            cjob = ClusterJob(experiments_count=len(experiments), start_index=exp_index)
-            logger.debug("Submitting job %s/%s for job set %s", i+1, total_jobs, self._name)
-            cjob.submit(qobj=qobj, job_name=job_name, backend=backend,
-                        executor=executor, job_share_level=job_share_level,
-                        job_tags=self._tags+[self._id_long], submit_lock=self._job_submit_lock)
+        total_jobs = len(self._experiments)
+        for i, exp in enumerate(self._experiments):
+            qobj = assemble(exp, backend=self._backend, **self._assemble_config)
+            job_name = f'{self._name}_{i}'
+            cjob = CJob(qobj=qobj, backend=self._backend, backend_options=self._backend_options,
+                        noise_model=self._noise_model, validate=self._validate, name=job_name)
+            cjob.submit(executor=executor)
             logger.debug("Job %s submitted", i+1)
-            self._managed_jobs.append(mjob)
-            exp_index += len(experiments)
- 
+            self._futures.append(cjob)
+
+    @requires_submit
     def statuses(self) -> List[Union[JobStatus, None]]:
         """Return the status of each job in this set.
 
@@ -123,44 +120,24 @@ class ClusterJobSet:
             A list of job statuses. An entry in the list is ``None`` if the
             job status could not be retrieved due to a server error.
         """
-        return [mjob.status() for mjob in self._managed_jobs]
+        return [cjob.status() for cjob in self._futures]
 
     @requires_submit
     def results(
             self,
             timeout: Optional[float] = None,
-    ) -> ClusterResults:
+            raises: Optional[bool] = False
+    ) -> CResults:
         """Return the results of the jobs.
 
         This call will block until all job results become available or
-        the timeout is reached.
-
-        Note:
-            When `partial=True`, this method will attempt to retrieve partial
-            results of failed jobs. In this case, precaution should
-            be taken when accessing individual experiments, as doing so might
-            cause an exception. The ``success`` attribute of the returned
-            :class:`ManagedResults`
-            instance can be used to verify whether it contains
-            partial results.
-
-            For example, if one of the experiments failed, trying to get the counts
-            of the unsuccessful experiment would raise an exception since there
-            are no counts to return::
-
-                try:
-                    counts = managed_results.get_counts("failed_experiment")
-                except QiskitError:
-                    print("Experiment failed!")
-
+        the timeout is reached. Analogous to dask.client.gather()
+ 
         Args:
            timeout: Number of seconds to wait for job results.
-           partial: If ``True``, attempt to retrieve partial job results.
-           refresh: If ``True``, re-query the server for the result. Otherwise
-                return the cached value.
 
         Returns:
-            A :class:`ManagedResults`
+            A :class:`CResults`
             instance that can be used to retrieve results
             for individual experiments.
 
@@ -168,51 +145,79 @@ class ClusterJobSet:
             IBMQJobManagerTimeoutError: if unable to retrieve all job results before the
                 specified timeout.
         """
-        if self._managed_results is not None and not refresh:
-            return self._managed_results
+        if self._cluster_results is not None:
+            return self._cluster_results
 
         start_time = time.time()
         original_timeout = timeout
         success = True
 
         # TODO We can potentially make this multithreaded
-        for mjob in self._managed_jobs:
+        for cjob in self._futures:
             try:
-                result = mjob.result(timeout=timeout, partial=partial, refresh=refresh)
+                result = cjob.result(timeout=timeout, raises=raises)
                 if result is None or not result.success:
                     success = False
-            except IBMQJobTimeoutError as ex:
-                raise IBMQJobManagerTimeoutError(
-                    'Timeout while waiting for the results for experiments {}-{}.'.format(
-                        mjob.start_index, self._managed_jobs[-1].end_index)) from ex
+            except AerClusterTimeoutError as ex:
+                raise AerClusterTimeoutError(
+                    'Timeout while waiting for the results of experiment {}'.format(
+                        cjob.name())) from ex
 
             if timeout:
                 timeout = original_timeout - (time.time() - start_time)
                 if timeout <= 0:
-                    raise IBMQJobManagerTimeoutError(
-                        'Timeout while waiting for the results for experiments {}-{}.'.format(
-                            mjob.start_index, self._managed_jobs[-1].end_index))
+                    raise AerClusterTimeOutError(
+                        "Timeout while waiting for JobSet results")
 
-        self._managed_results = ManagedResults(self, self._backend.name(), success)
+        self._cluster_results = CResults(self, self._backend.name(), success)
 
-        return self._managed_results
+        return self._cluster_results
 
     @requires_submit
     def cancel(self) -> None:
         """Cancel all jobs in this job set."""
-        for mjob in self._managed_jobs:
-            mjob.cancel()
+        for cjob in self._futures:
+            cjob.cancel()
 
     @requires_submit
-    def jobs(self) -> List[Union[IBMQJob, None]]:
+    def job(self, experiment):
+        """Retrieve the job used to submit the specified experiment and its index.
+
+        Args:
+            experiment: Retrieve the job used to submit this experiment. Several
+                types are accepted for convenience:
+
+                    * str: The name of the experiment.
+                    * QuantumCircuit: The name of the circuit instance will be used.
+                    * Schedule: The name of the schedule instance will be used.
+
+        Returns:
+            A tuple of the job used to submit the experiment and the experiment index.
+
+        Raises:
+            AerClusterJobNotFound: If the job for the experiment could not
+                be found.
+        """
+        if isinstance(experiment, (QuantumCircuit, Schedule)):
+            experiment = experiment.name
+        for job in self.jobs():
+            for i, exp in enumerate(job.qobj().experiments):
+                if hasattr(exp.header, 'name') and exp.header.name == experiment:
+                    return job, i
+
+        raise AerClusterJobNotFound(
+            'Unable to find the job for experiment {}.'.format(experiment))
+
+    @requires_submit
+    def jobs(self) -> List[Union[CJob, None]]:
         """Return jobs in this job set.
 
         Returns:
-            A list of :class:`~qiskit.providers.ibmq.job.IBMQJob`
+            A list of :class:`~qiskit.providers.aer.cluster.CJob`
             instances that represents the submitted jobs.
             An entry in the list is ``None`` if the job failed to be submitted.
         """
-        return [mjob.job for mjob in self._managed_jobs]
+        return self._futures
 
     def name(self) -> str:
         """Return the name of this job set.
@@ -232,10 +237,10 @@ class ClusterJobSet:
         # full ID is used for another job.
         return self._id
 
-    def managed_jobs(self) -> List[ClusterJob]:
+    def managed_jobs(self) -> List[CJob]:
         """Return the managed jobs in this set.
 
         Returns:
             A list of managed jobs.
         """
-        return self._managed_jobs
+        return self._futures

@@ -23,12 +23,11 @@ from qiskit.result import Result
 from qiskit.circuit import QuantumCircuit
 from qiskit.pulse import Schedule
 
-from qiskit.providers.aer.cluster import clusterjobset  # pylint: disable=unused-import
 from qiskit.providers import JobError
+from .exceptions import AerClusterResultDataNotAvailable 
 
-
-class ClusterResults:
-    """Results managed by the Job Manager.
+class CResults:
+    """A CResults instance is returned by CJobSet by the Job Manager.
 
     This class is a wrapper around the :class:`~qiskit.result.Result` class and
     provides the same methods. Please refer to the
@@ -192,8 +191,8 @@ class ClusterResults:
             return self._combined_results
 
         if not self.success:
-            raise IBMQManagedResultDataNotAvailable(
-                "Results cannot be combined since some of the jobs failed.")
+            raise AerClusterResultDataNotAvailable(
+                "Results cannot be combined since one or more jobs failed.")
 
         jobs = self._job_set.jobs()
         combined_result = copy.deepcopy(jobs[0].result())
@@ -205,7 +204,7 @@ class ClusterResults:
 
     def _get_result(
             self,
-            experiment: Union[str, QuantumCircuit, Schedule, int]
+            experiment: Union[str, QuantumCircuit, Schedule]
     ) -> Tuple[Result, int]:
         """Get the result of the job used to submit the experiment.
 
@@ -223,13 +222,9 @@ class ClusterResults:
         """
 
         (job, exp_index) = self._job_set.job(experiment)
-        if job is None:
-            raise IBMQManagedResultDataNotAvailable(
-                'Job for experiment {} was not successfully submitted.'.format(experiment))
-
         try:
             result = job.result()
             return result, exp_index
         except JobError as err:
-            raise IBMQManagedResultDataNotAvailable(
+            raise AerClusterResultDataNotAvailable(
                 'Result data for experiment {} is not available.'.format(experiment)) from err

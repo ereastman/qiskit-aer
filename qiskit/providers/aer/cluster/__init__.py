@@ -29,7 +29,7 @@ Classes
 """
 
 from .clustermanager import AerClusterManager
-from .clusterjobset import ClusterJobSet
-from .clusterjob import ClusterJob
-from .clusterresults import ClusterResults
+from .clusterjobset import JobSet
+from .clusterjob import CJob
+from .clusterresults import CResults
 from .exceptions import *

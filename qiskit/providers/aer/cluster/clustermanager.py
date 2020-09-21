@@ -14,36 +14,39 @@
 
 """Manager for Qiskit Aer cluster-backed simulations."""
 from dask.distributed import Client, LocalCluster
-from .aerbackend import AerBackend
+from ..backends.aerbackend import AerBackend
+from qiskit.pulse import Schedule
+from .clusterjobset import JobSet
+#from qiskit.providers.aer.backends.aerbackend import AerBackend
 
 class AerClusterManager:
     """Manager for Qiskit Aer cluster-backed simulations."""
 
-    def __init__(self, cluster=None) -> None:
+    def __init__(self, cluster=None, **assemble_config) -> None:
         """ClusterManager Constructor."""
-        self._job_sets = [] # type: List[ManagedJobSet]
         self._cluster = cluster or LocalCluster()
-        self._client = Client(cluster)
+        self._client = Client(self._cluster)
+        self._assemble_config = assemble_config
+        #self._backend = backend
+        #self._backend_options = backend_options
+        #self._noise_model = noise_model
 
-    def run(self,
-            experiments: Union[List[QuantumCircuit], List[Schedule]],
-            backend: AerBackend,
-            name: Optional[str] = None,
-            max_experiments_per_job: Optional[int] = None,
-            **run_config: Any
-    ) -> ManagedJobSet:
-        if (any(isinstance(exp, Schedule) for exp in experiments) and
-                not backend.configuration().open_pulse):
-            raise ValueError(
-                'Pulse schedules found, but the backend does not support pulse schedules.')
+        self._job_sets = []
 
+    def run(self, experiments, backend, name=None, backend_options=None,
+            noise_model=None, validate=False):
         if not isinstance(backend, AerBackend):
             raise ValueError(
                 "AerClusterManager only supports AerBackends. "
                 "{} is not an AerBackend.".format(backend))
 
-        job_set = ClusterJobSet(name=name)
-        job_set.run(experiments, backend=backend, executor=self._client, **run_config)
+        if (any(isinstance(exp, Schedule) for exp in experiments) and
+                not backend.configuration().open_pulse):
+            raise ValueError(
+                'Pulse schedules found, but the backend does not support pulse schedules.')
+
+        job_set = JobSet(experiments, backend, backend_options, noise_model, validate, name=name, **self._assemble_config)
+        job_set.run(executor=self._client)
         self._job_sets.append(job_set)
 
         return job_set
